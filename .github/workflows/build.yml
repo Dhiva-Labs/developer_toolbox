@@ -1,60 +1,335 @@
 name: Build releases
 
+# Linux and Windows, x64 and arm64, built natively on a runner of each
+# architecture, plus the Android APKs. Every desktop leg runs the tests, checks
+# the machine type of every binary in the bundle, packages it and starts the
+# packaged app once.
+# A published release gets the desktop packages attached; names that are already
+# on the release (hand-uploaded files) are left alone. The Android APKs stay
+# workflow artifacts: they are signed with the debug key, so APKs built here
+# could not update the ones already installed from a release.
+
 on:
   push:
-    tags: ['v*']
+    branches: [main]
+  pull_request:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to attach the desktop packages to (leave empty to only build)
+        required: false
+        default: ''
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  FLUTTER_VERSION: '3.44.6'
 
 jobs:
-  windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-      - run: flutter pub get
-      - run: flutter build windows --release
-      - name: Zip Windows build
-        run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath developer-toolbox-windows-x64.zip
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-x64
-          path: developer-toolbox-windows-x64.zip
-
   linux:
-    runs-on: ubuntu-latest
+    name: Linux ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            deb_arch: amd64
+            runner: ubuntu-24.04
+            elf_machine: x86-64
+          - arch: arm64
+            deb_arch: arm64
+            runner: ubuntu-24.04-arm
+            elf_machine: ARM aarch64
+    env:
+      BUNDLE: build/linux/${{ matrix.arch }}/release/bundle
+      ELF_MACHINE: ${{ matrix.elf_machine }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Install Linux build deps
-        run: sudo apt-get update && sudo apt-get install -y ninja-build libgtk-3-dev
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-      - run: flutter pub get
-      - run: flutter build linux --release
-      - name: Build .deb
+      - uses: actions/checkout@v7
+
+      # xvfb, xauth, xdotool, dbus-x11: the smoke run of the installed .deb.
+      - name: Install build dependencies
         run: |
-          PKG=dist/deb/developer-toolbox_${GITHUB_REF_NAME#v}_amd64
-          mkdir -p $PKG/DEBIAN $PKG/usr/lib/developer-toolbox $PKG/usr/bin \
-            $PKG/usr/share/applications $PKG/usr/share/icons/hicolor/256x256/apps
-          cp -r build/linux/x64/release/bundle/* $PKG/usr/lib/developer-toolbox/
-          ln -s /usr/lib/developer-toolbox/developer_toolbox $PKG/usr/bin/developer-toolbox
-          cp assets/icon/icon_256.png $PKG/usr/share/icons/hicolor/256x256/apps/developer-toolbox.png
-          printf '[Desktop Entry]\nName=Developer Toolbox\nComment=Offline-first collection of developer tools\nExec=developer-toolbox\nIcon=developer-toolbox\nTerminal=false\nType=Application\nCategories=Development;Utility;\n' \
-            > $PKG/usr/share/applications/developer-toolbox.desktop
-          printf 'Package: developer-toolbox\nVersion: %s\nArchitecture: amd64\nMaintainer: Dhivakar <dhivakar1010@gmail.com>\nDepends: libgtk-3-0, libglib2.0-0, libstdc++6\nSection: devel\nPriority: optional\nDescription: Offline-first collection of developer tools\n' \
-            "${GITHUB_REF_NAME#v}" > $PKG/DEBIAN/control
-          dpkg-deb --build --root-owner-group $PKG developer-toolbox-amd64.deb
-      - uses: actions/upload-artifact@v4
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang cmake ninja-build pkg-config \
+            libgtk-3-dev liblzma-dev libstdc++-12-dev \
+            file xvfb xauth xdotool dbus-x11
+
+      - name: Install Flutter ${{ env.FLUTTER_VERSION }}
+        run: |
+          git clone --depth 1 --branch "$FLUTTER_VERSION" \
+            https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+
+      - name: Configure Flutter
+        run: |
+          uname -m
+          flutter config --no-analytics --enable-linux-desktop
+          flutter precache --linux
+          flutter --version
+          dart --version
+
+      - name: Get packages
+        run: flutter pub get
+
+      - name: Test
+        run: flutter test
+
+      - name: Build release
+        run: flutter build linux --release
+
+      - name: Assert every ELF file in the bundle is ${{ matrix.elf_machine }}
+        run: |
+          for f in developer_toolbox lib/libapp.so lib/libflutter_linux_gtk.so; do
+            [ -f "$BUNDLE/$f" ] || { echo "::error::missing $BUNDLE/$f"; exit 1; }
+          done
+          checked=0
+          bad=0
+          while IFS= read -r -d '' f; do
+            desc="$(file -b "$f")"
+            case "$desc" in ELF*) ;; *) continue ;; esac
+            echo "$f: $desc"
+            checked=$((checked + 1))
+            case "$desc" in
+              *"$ELF_MACHINE"*) ;;
+              *) echo "::error file=$f::not $ELF_MACHINE"; bad=1 ;;
+            esac
+          done < <(find "$BUNDLE" -type f -print0)
+          echo "checked $checked ELF files"
+          [ "$checked" -ge 3 ] && [ "$bad" -eq 0 ]
+
+      - name: Build .deb
+        run: tools/build_deb.sh out
+
+      - name: Check the .deb
+        run: |
+          VERSION="$(grep '^version:' pubspec.yaml | awk '{print $2}' | cut -d+ -f1)"
+          DEB="out/developer-toolbox_${VERSION}_${{ matrix.deb_arch }}.deb"
+          ls -l out
+          [ "$(ls out | wc -l)" -eq 1 ]
+          dpkg-deb --info "$DEB"
+          [ "$(dpkg-deb --field "$DEB" Architecture)" = "${{ matrix.deb_arch }}" ]
+          sudo apt-get install -y "./$DEB"
+          for f in developer_toolbox lib/libapp.so lib/libflutter_linux_gtk.so; do
+            file "/usr/lib/developer-toolbox/$f" | tee /dev/stderr | grep "$ELF_MACHINE"
+          done
+
+      # Starts the installed package with a clean home directory. The window is
+      # only shown after Flutter renders its first frame, and main() opens the
+      # Hive settings box from Dart.
+      - name: Smoke-run the installed app (Xvfb)
+        timeout-minutes: 5
+        run: |
+          cat > "$RUNNER_TEMP/smoke.sh" <<'EOF'
+          export HOME="$RUNNER_TEMP/smoke-home"
+          rm -rf "$HOME"
+          mkdir -p "$HOME"
+          unset XDG_DATA_HOME XDG_CONFIG_HOME XDG_DOCUMENTS_DIR
+          log="$RUNNER_TEMP/smoke.log"
+          developer-toolbox > "$log" 2>&1 &
+          pid=$!
+          for i in $(seq 1 90); do
+            if xdotool search --name 'developer_toolbox' > /dev/null 2>&1 \
+               && [ -n "$(find "$HOME" -name 'settings.hive' 2> /dev/null)" ]; then
+              echo "developer-toolbox is up after ${i}s: window shown, Hive box:"
+              find "$HOME" -name 'settings.hive'
+              sleep 5
+              kill -0 "$pid" || { echo "developer-toolbox died after showing its window"; cat "$log"; exit 1; }
+              kill "$pid"
+              cat "$log"
+              exit 0
+            fi
+            kill -0 "$pid" 2> /dev/null || { echo "developer-toolbox exited early"; cat "$log"; exit 1; }
+            sleep 1
+          done
+          echo "developer-toolbox did not come up in 90s"
+          cat "$log"
+          exit 1
+          EOF
+          xvfb-run -a -s "-screen 0 1280x800x24" dbus-run-session -- bash "$RUNNER_TEMP/smoke.sh"
+
+      - uses: actions/upload-artifact@v7
         with:
-          name: linux-deb
-          path: developer-toolbox-amd64.deb
+          name: linux-${{ matrix.arch }}
+          path: out/*.deb
+          if-no-files-found: error
+
+  windows:
+    name: Windows ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+            pe_machine: '0x8664'
+            elf_machine: '0x3E'
+          - arch: arm64
+            runner: windows-11-arm
+            pe_machine: '0xAA64'
+            elf_machine: '0xB7'
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      ARCH: ${{ matrix.arch }}
+      RELEASE_DIR: build\windows\${{ matrix.arch }}\runner\Release
+      # PE COFF machine of every .exe/.dll, and ELF e_machine of the AOT
+      # snapshot (data\app.so is an ELF file on Windows too).
+      PE_MACHINE: ${{ matrix.pe_machine }}
+      ELF_MACHINE: ${{ matrix.elf_machine }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # On an ARM64 host (PROCESSOR_ARCHITECTURE=ARM64) the bootstrap fetches
+      # the arm64 Dart SDK and `flutter build windows` targets windows-arm64.
+      - name: Install Flutter ${{ env.FLUTTER_VERSION }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          git clone --depth 1 --branch $env:FLUTTER_VERSION `
+            https://github.com/flutter/flutter.git "$env:RUNNER_TEMP\flutter"
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:RUNNER_TEMP\flutter\bin"
+
+      - name: Configure Flutter
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          "PROCESSOR_ARCHITECTURE=$env:PROCESSOR_ARCHITECTURE"
+          flutter config --no-analytics --enable-windows-desktop
+          flutter precache --windows
+          flutter --version
+          dart --version
+
+      - name: Get packages
+        run: flutter pub get
+
+      - name: Test
+        run: flutter test
+
+      - name: Build release
+        run: flutter build windows --release
+
+      - name: Assert every PE file is ${{ matrix.pe_machine }}
+        run: |
+          function Get-PeMachine([string]$Path) {
+            $fs = [IO.File]::OpenRead($Path)
+            try {
+              $br = New-Object IO.BinaryReader($fs)
+              $fs.Position = 0x3C
+              $fs.Position = $br.ReadInt32()
+              if ($br.ReadUInt32() -ne 0x4550) { throw "$Path is not a PE file" }
+              return $br.ReadUInt16()
+            } finally { $fs.Dispose() }
+          }
+          $expected = [Convert]::ToUInt16($env:PE_MACHINE, 16)
+          $files = Get-ChildItem -Path $env:RELEASE_DIR -Recurse -File -Include *.exe, *.dll
+          foreach ($required in 'developer_toolbox.exe', 'flutter_windows.dll') {
+            if (-not ($files.Name -contains $required)) { throw "$required missing from $env:RELEASE_DIR" }
+          }
+          $bad = 0
+          foreach ($f in $files) {
+            $m = Get-PeMachine $f.FullName
+            '{0,-50} 0x{1:X4}' -f $f.Name, $m
+            if ($m -ne $expected) { Write-Host "::error file=$($f.FullName)::machine 0x$('{0:X4}' -f $m), expected $env:PE_MACHINE"; $bad++ }
+          }
+          $bytes = [IO.File]::ReadAllBytes("$env:RELEASE_DIR\data\app.so")
+          $elf = [BitConverter]::ToUInt16($bytes, 0x12)
+          'data\app.so ELF e_machine 0x{0:X2}' -f $elf
+          if ($elf -ne [Convert]::ToUInt16($env:ELF_MACHINE, 16)) { Write-Host "::error::app.so is not $env:ELF_MACHINE"; $bad++ }
+          "checked $($files.Count) PE files and app.so"
+          if ($bad) { exit 1 }
+
+      - name: Package zip
+        run: ./tools/package_windows.ps1 -OutDir out
+
+      - name: Check the zip
+        run: |
+          function Get-PeMachine([string]$Path) {
+            $fs = [IO.File]::OpenRead($Path)
+            try {
+              $br = New-Object IO.BinaryReader($fs)
+              $fs.Position = 0x3C
+              $fs.Position = $br.ReadInt32()
+              if ($br.ReadUInt32() -ne 0x4550) { throw "$Path is not a PE file" }
+              return $br.ReadUInt16()
+            } finally { $fs.Dispose() }
+          }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $expected = [Convert]::ToUInt16($env:PE_MACHINE, 16)
+          Get-ChildItem out | Format-Table Name, Length
+          $zips = @(Get-ChildItem out)
+          if ($zips.Count -ne 1) { throw 'expected exactly one zip in out' }
+          if ($zips[0].Name -notlike "developer-toolbox-*-windows-$env:ARCH.zip") { throw "unexpected zip name $($zips[0].Name)" }
+          $zip = [IO.Compression.ZipFile]::OpenRead($zips[0].FullName)
+          try {
+            $entry = $zip.GetEntry('developer_toolbox.exe')
+            if (-not $entry) { throw 'developer_toolbox.exe not at the top level of the zip' }
+            $tmp = Join-Path $env:RUNNER_TEMP 'zip_developer_toolbox.exe'
+            [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $tmp, $true)
+            $m = Get-PeMachine $tmp
+            'zip: {0} entries, developer_toolbox.exe 0x{1:X4}' -f $zip.Entries.Count, $m
+            if ($m -ne $expected) { throw 'zip holds the wrong architecture' }
+            $bad = @($zip.Entries | Where-Object { $_.FullName.Contains('\') })
+            if ($bad.Count -gt 0) { throw "zip entries use backslashes, for example $($bad[0].FullName)" }
+          } finally { $zip.Dispose() }
+
+      # Unpacks the zip and starts it with a window, like a user would. The
+      # window is only shown after Flutter renders its first frame, and main()
+      # opens the Hive settings box (settings.hive in Documents) from Dart.
+      - name: Smoke-run the packaged app
+        timeout-minutes: 5
+        run: |
+          $unpacked = Join-Path $env:RUNNER_TEMP 'unpacked'
+          Expand-Archive -Path (Get-ChildItem out\*.zip).FullName -DestinationPath $unpacked
+          $exe = Join-Path $unpacked 'developer_toolbox.exe'
+          $documents = [Environment]::GetFolderPath('MyDocuments')
+          $started = Get-Date
+          $p = Start-Process -FilePath $exe -PassThru
+          $up = $false
+          for ($i = 1; $i -le 90; $i++) {
+            Start-Sleep -Seconds 1
+            $p.Refresh()
+            if ($p.HasExited) { throw "developer_toolbox.exe exited early with code $($p.ExitCode)" }
+            if ($p.MainWindowHandle -eq 0) { continue }
+            $hive = @(Get-ChildItem -Path $documents -Recurse -Filter settings.hive -ErrorAction SilentlyContinue |
+              Where-Object { $_.LastWriteTime -ge $started })
+            if ($hive.Count -gt 0) {
+              "window '$($p.MainWindowTitle)' is up after ${i}s; Hive box $($hive[0].FullName)"
+              $up = $true
+              break
+            }
+          }
+          if (-not $up) {
+            Stop-Process -Id $p.Id -Force
+            throw "developer_toolbox.exe did not come up in 90 s (window handle $($p.MainWindowHandle), hive files: $($hive.Count))"
+          }
+          Start-Sleep -Seconds 5
+          $p.Refresh()
+          if ($p.HasExited) { throw "developer_toolbox.exe died after showing its window (code $($p.ExitCode))" }
+          Stop-Process -Id $p.Id -Force
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-${{ matrix.arch }}
+          path: out/*.zip
+          if-no-files-found: error
 
   android:
+    name: Android APKs
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -62,9 +337,66 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
       - run: flutter pub get
       - run: flutter build apk --release --split-per-abi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: android-apks
           path: build/app/outputs/flutter-apk/app-*-release.apk
+          if-no-files-found: error
+
+  release:
+    name: Release assets
+    needs: [linux, windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: pubspec.yaml
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: linux-*
+          path: assets
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: windows-*
+          path: assets
+          merge-multiple: true
+
+      - name: Select the release assets
+        id: select
+        run: |
+          VERSION="$(grep '^version:' pubspec.yaml | awk '{print $2}' | cut -d+ -f1)"
+          FILES=""
+          for arch in amd64 arm64; do FILES="$FILES assets/developer-toolbox_${VERSION}_${arch}.deb"; done
+          for arch in x64 arm64; do FILES="$FILES assets/developer-toolbox-${VERSION}-windows-${arch}.zip"; done
+          ls -l assets
+          ls -l $FILES
+          echo "files=$FILES" >> "$GITHUB_OUTPUT"
+
+      # Names already on the release (the hand-built amd64 .deb) are kept as
+      # they are.
+      - name: Upload to release ${{ github.event.release.tag_name || inputs.release_tag }}
+        if: github.event_name == 'release' || inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+          FILES: ${{ steps.select.outputs.files }}
+        run: |
+          existing="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          for f in $FILES; do
+            name="$(basename "$f")"
+            if grep -qxF "$name" <<< "$existing"; then
+              echo "skip $name (already on release $TAG)"
+            else
+              gh release upload "$TAG" "$f" --repo "$GITHUB_REPOSITORY"
+            fi
+          done
