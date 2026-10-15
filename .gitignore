@@ -43,3 +43,6 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Output of tools/build_deb.sh and tools/package_windows.ps1
+/out/
