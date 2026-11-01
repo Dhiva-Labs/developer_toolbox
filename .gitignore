@@ -46,3 +46,6 @@ app.*.map.json
 
 # Output of tools/build_deb.sh and tools/package_windows.ps1
 /out/
+
+# Installed tree the Flatpak CI job unpacks (packaging/flatpak/README.md).
+/packaging/flatpak/tree/

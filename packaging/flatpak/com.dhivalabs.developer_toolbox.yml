@@ -1,0 +1,46 @@
+# Flatpak manifest for Developer Toolbox.
+#
+# Like the .rpm, Arch package and AppImage, this repackages the installed
+# tree of the .deb that CI builds (unpacked into packaging/flatpak/tree/ by
+# the workflow), so the Flatpak ships the same binary as every other format
+# instead of a second build inside the sandbox. A Flathub submission needs
+# `tree` swapped for an archive source (release URL + sha256); see README.md
+# in this directory.
+id: com.dhivalabs.developer_toolbox
+runtime: org.gnome.Platform
+runtime-version: '51'
+sdk: org.gnome.Sdk
+command: developer-toolbox
+finish-args:
+  # GTK needs a display socket; fallback-x11 covers X11-only desktops.
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  # GPU acceleration for Flutter's renderer.
+  - --device=dri
+  # Hive keeps the settings (theme, favourites) in the XDG Documents folder
+  # (path_provider's getApplicationDocumentsDirectory), as on every other
+  # Linux build. The app needs nothing else: it is offline, no network.
+  - --filesystem=xdg-documents
+modules:
+  - name: developer-toolbox
+    buildsystem: simple
+    sources:
+      - type: dir
+        path: tree
+        dest: tree
+      - type: file
+        path: com.dhivalabs.developer_toolbox.metainfo.xml
+    build-commands:
+      # Flutter finds lib/ and data/ next to its executable.
+      - install -d /app/lib /app/bin
+      - cp -a tree/usr/lib/developer-toolbox /app/lib/developer-toolbox
+      - ln -s ../lib/developer-toolbox/developer_toolbox /app/bin/developer-toolbox
+      # Flatpak exports only desktop files and icons named after the app id
+      # (which is also the GTK application id, so the window matches it).
+      - install -Dm644 tree/usr/share/applications/developer-toolbox.desktop
+        /app/share/applications/com.dhivalabs.developer_toolbox.desktop
+      - desktop-file-edit --set-icon=com.dhivalabs.developer_toolbox /app/share/applications/com.dhivalabs.developer_toolbox.desktop
+      - for size in 256 512; do install -Dm644 tree/usr/share/icons/hicolor/${size}x${size}/apps/developer-toolbox.png
+        /app/share/icons/hicolor/${size}x${size}/apps/com.dhivalabs.developer_toolbox.png; done
+      - install -Dm644 com.dhivalabs.developer_toolbox.metainfo.xml /app/share/metainfo/com.dhivalabs.developer_toolbox.metainfo.xml
