@@ -3,6 +3,7 @@
 [![ARM64 builds](https://github.com/Dhiva-Labs/developer_toolbox/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/Dhiva-Labs/developer_toolbox/actions/workflows/build.yml)
 ![Linux x64 | arm64](https://img.shields.io/badge/Linux-x64%20%7C%20arm64-informational?logo=linux&logoColor=white)
 ![Windows x64 | arm64](https://img.shields.io/badge/Windows-x64%20%7C%20arm64-informational?logo=windows&logoColor=white)
+![Linux: deb | rpm | Arch | AppImage | Flatpak](https://img.shields.io/badge/Linux-deb%20%7C%20rpm%20%7C%20Arch%20%7C%20AppImage%20%7C%20Flatpak-informational?logo=linux&logoColor=white)
 
 A clean, offline-first collection of developer tools built with Flutter.
 One codebase, runs on **Windows, Linux, and Android**.
@@ -55,8 +56,40 @@ sudo apt install ./developer-toolbox_<version>_arm64.deb   # or _amd64.deb
 
 On Windows, unzip and run `developer_toolbox.exe`.
 
+### Other Linux distributions
+
+From the next release on, releases also carry packages for other
+distributions, built from the same binaries as the `.deb` (`x86_64` and
+`aarch64`):
+
+| Distribution | Asset | Install |
+|---|---|---|
+| Fedora, RHEL/Rocky/Alma | `developer-toolbox-<version>-1.<arch>.rpm` | `sudo dnf install ./developer-toolbox-<version>-1.<arch>.rpm` |
+| openSUSE Tumbleweed | `developer-toolbox-<version>-1.<arch>.rpm` | `sudo zypper install --allow-unsigned-rpm ./developer-toolbox-<version>-1.<arch>.rpm` |
+| Arch, Manjaro, EndeavourOS | `developer-toolbox-<version>-1-<arch>.pkg.tar.zst` | `sudo pacman -U ./developer-toolbox-<version>-1-<arch>.pkg.tar.zst` |
+| Any (AppImage) | `DeveloperToolbox-<version>-<arch>.AppImage` | `chmod +x DeveloperToolbox-<version>-<arch>.AppImage && ./DeveloperToolbox-<version>-<arch>.AppImage` |
+| Any (Flatpak) | `developer-toolbox-<version>-<arch>.flatpak` | `flatpak install --user ./developer-toolbox-<version>-<arch>.flatpak` |
+
+- The binaries are built on Ubuntu 24.04, so they need glibc 2.39 or newer:
+  Fedora 40+, openSUSE Tumbleweed and current Arch, but not openSUSE Leap 15
+  or RHEL 9. The AppImage uses the system's GTK 3, and `xdg-user-dir`
+  (xdg-user-dirs, on every desktop) to find the Documents folder its
+  settings live in.
+- The `.rpm` files are unsigned (hence `--allow-unsigned-rpm` on openSUSE).
+- The Flatpak bundle uses the GNOME 51 runtime from Flathub: add the Flathub
+  remote first (`flatpak remote-add --user --if-not-exists flathub
+  https://dl.flathub.org/repo/flathub.flatpakrepo`). Its only permission
+  beyond the display is the Documents folder, where the settings are kept.
+- Arch users can build `developer-toolbox-bin` from the AUR recipe attached
+  to each release (`developer-toolbox-bin-<version>-aur.tar.gz`: PKGBUILD
+  and .SRCINFO).
+
 The [Build releases](.github/workflows/build.yml) workflow builds, tests and
 starts the packaged app on Linux and Windows, x64 and arm64, on every push.
+The `.rpm` is installed and run on Fedora and openSUSE Tumbleweed, the Arch
+package on Arch Linux (x64; arm64 gets a static check, as there is no official
+Arch Linux ARM image), the AppImage on Fedora, and the Flatpak in its
+sandbox.
 
 ## Building
 
