@@ -37,8 +37,11 @@ case "$MODE" in
   rpm-suse) zypper -n install --allow-unsigned-rpm "$FILE"; files() { rpm -ql "$NAME"; } ;;
   pacman)   pacman -U --noconfirm "$FILE"; files() { pacman -Qlq "$NAME"; } ;;
   appimage)
-    # The libraries an AppImage expects from the host: GTK 3 and friends.
-    dnf -y -q install gtk3
+    # What an AppImage expects from the host: GTK 3 and friends, and
+    # xdg-user-dir, which path_provider runs to find the Documents folder
+    # Hive keeps its box in (part of every desktop install; the rpm and the
+    # Arch package depend on it).
+    dnf -y -q install gtk3 xdg-user-dirs
     cp "$FILE" /tmp/app.AppImage
     chmod +x /tmp/app.AppImage
     (cd /tmp && /tmp/app.AppImage --appimage-extract > /dev/null)
