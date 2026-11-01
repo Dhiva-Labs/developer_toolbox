@@ -22,6 +22,12 @@ finish-args:
   # (path_provider's getApplicationDocumentsDirectory), as on every other
   # Linux build. The app needs nothing else: it is offline, no network.
   - --filesystem=xdg-documents
+  # path_provider finds that folder with `xdg-user-dir DOCUMENTS`, which reads
+  # $XDG_CONFIG_HOME/user-dirs.dirs. Flatpak puts the host's file there only
+  # for apps with home access; without it xdg-user-dir answers $HOME, which
+  # in the sandbox is a scratch directory that is gone when the app exits,
+  # and the settings were never saved. This binds just that file, read-only.
+  - --filesystem=xdg-config/user-dirs.dirs:ro
 modules:
   - name: developer-toolbox
     buildsystem: simple

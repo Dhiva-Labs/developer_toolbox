@@ -34,6 +34,10 @@ flatpak run com.dhivalabs.developer_toolbox
 - `--filesystem=xdg-documents`: Hive stores the settings (theme, favourites)
   in the Documents folder (`getApplicationDocumentsDirectory`), as every
   other Linux build does.
+- `--filesystem=xdg-config/user-dirs.dirs:ro`: path_provider finds the
+  Documents folder with `xdg-user-dir`, which reads `user-dirs.dirs`. Flatpak
+  shares that file only with apps that have home access; without it the app
+  would save into the sandbox's scratch home and lose the settings on exit.
 - No network: the tools are offline. Clipboard access goes through the
   display server.
 

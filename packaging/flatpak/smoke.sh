@@ -53,8 +53,9 @@ fb="$(mktemp -d)"
 cat > "$fb/run.sh" <<'EOS'
 set -euo pipefail
 app_id="$1"; fb="$2"; here="$3"
-mkdir -p "$HOME/.config" "$HOME/Documents"
-echo 'XDG_DOCUMENTS_DIR="$HOME/Documents"' > "$HOME/.config/user-dirs.dirs"
+config="${XDG_CONFIG_HOME:-$HOME/.config}"
+mkdir -p "$config" "$HOME/Documents"
+echo 'XDG_DOCUMENTS_DIR="$HOME/Documents"' > "$config/user-dirs.dirs"
 rm -f "$HOME/Documents/settings.hive"
 log="$fb/app.log"
 flatpak run "$app_id" > "$log" 2>&1 &
@@ -76,6 +77,7 @@ if [ "$ok" = 1 ]; then
 else
   echo "not up after 120s: screen colours ${colours:-?}; Hive files under $HOME:"
   find "$HOME" -name '*.hive' 2> /dev/null || :
+  echo "xdg-user-dir DOCUMENTS in the sandbox: $(flatpak run --command=xdg-user-dir "$app_id" DOCUMENTS 2>&1 || :)"
 fi
 kill "$pid" 2> /dev/null || :
 cat "$log"
