@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.dhivalabs.developer_toolbox</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary</project_license>
+  <name>Developer Toolbox</name>
+  <summary>Offline-first collection of developer tools</summary>
+  <description>
+    <p>21 developer tools in one app: JSON formatter/validator, Base64 and
+    URL encoding, regex tester, JWT decoder, UUID and password generators,
+    hash generator, color tools, QR codes, timestamp converter and more.
+    Built with Flutter, Material 3, fully offline.</p>
+  </description>
+  <launchable type="desktop-id">com.dhivalabs.developer_toolbox.desktop</launchable>
+  <provides>
+    <binary>developer-toolbox</binary>
+  </provides>
+  <url type="homepage">https://github.com/Dhiva-Labs/developer_toolbox</url>
+  <url type="bugtracker">https://github.com/Dhiva-Labs/developer_toolbox/issues</url>
+  <developer id="com.dhivalabs">
+    <name>Dhiva Labs</name>
+  </developer>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="1.0.1" date="2026-10-16"/>
+  </releases>
+</component>
